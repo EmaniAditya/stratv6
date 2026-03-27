@@ -41,7 +41,7 @@ const AppContent = () => {
   return (
     <TooltipProvider>
       <Sonner />
-      <BrowserRouter basename="/react_site">
+      <BrowserRouter>
         <RouteScrollToTop />
         <Routes>
           <Route path="/" element={<Index />} />
