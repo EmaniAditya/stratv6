@@ -1,10 +1,16 @@
 import { BarChart3, Plane, Globe, Users, Layers, FlaskConical } from "lucide-react";
+import type { DashboardDataSource } from "@/lib/dashboard-data-source";
 
 export type TabType = "overview" | "endUser" | "aircraft" | "region" | "application" | "equipment" | "process" | "material";
 export interface TabConfig { id: TabType; label: string; icon: React.ComponentType<{ className?: string }>; }
 
+const extrusionDataSource = {
+  kind: "live",
+  dashboardSlug: "extrusion-market",
+} as const satisfies DashboardDataSource;
+
 export const config = {
-  dataUrl: "/data/aircraft-interiors-extrusion-market.json",
+  dataSource: extrusionDataSource,
   title: "Aircraft Interiors Extrusion Market",
   subtitle: "Global Market Research Dashboard",
   defaultYear: 2025, useMillions: true,

@@ -20,7 +20,7 @@ const ThermoplasticPrepregDashboard = () => {
   const navigate = useNavigate();
   const [selectedYear, setSelectedYear] = useState<number>(config.defaultYear);
   const [activeTab, setActiveTab] = useState<TabType>("overview");
-  const { data: marketData, isLoading, error, refetch } = useMarketData(config.dataUrl);
+  const { data: marketData, isLoading, error, refetch } = useMarketData(config.dataSource);
 
   if (isLoading) return <DashboardSkeleton />;
 

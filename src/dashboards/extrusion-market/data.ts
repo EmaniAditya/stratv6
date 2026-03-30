@@ -1,13 +1,16 @@
 /**
  * Types, data fetching hook, and utility hooks for this dashboard.
- * Self-contained — no imports from shared hooks.
  */
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useCallback, useRef } from "react";
 import { toPng } from "html-to-image";
-import stratviewLogoWhite from "@/assets/stratview-logo-white.png";
 
-// ── Types ─────────────────────────────────────────────────────
+import stratviewLogoWhite from "@/assets/stratview-logo-white.png";
+import {
+  useCompactMarketDataSource,
+  type CompactMarketData,
+  type DashboardDataSource,
+} from "@/lib/dashboard-data-source";
 
 export interface YearlyData {
   year: number;
@@ -40,56 +43,94 @@ export interface MarketData {
   processTypeByApplication?: Record<string, SegmentData[]>;
 }
 
-// ── Compact JSON schema (what the JSON file looks like) ───────
-
-interface CompactMarketData {
-  years: number[];
-  totalMarket: number[];
-  endUser: Record<string, number[]>;
-  aircraftType: Record<string, number[]>;
-  region: Record<string, number[]>;
-  application: Record<string, number[]>;
-  furnishedEquipment: Record<string, number[]>;
-  processType?: Record<string, number[]>;
-  materialType?: Record<string, number[]>;
-  countryDataByRegion: Record<string, Record<string, number[]>>;
-  endUserByAircraftType: Record<string, Record<string, number[]>>;
-  endUserByRegion: Record<string, Record<string, number[]>>;
-  aircraftTypeByRegion: Record<string, Record<string, number[]>>;
-  applicationByRegion: Record<string, Record<string, number[]>>;
-  equipmentByRegion: Record<string, Record<string, number[]>>;
-  processTypeByRegion?: Record<string, Record<string, number[]>>;
-  materialTypeByRegion?: Record<string, Record<string, number[]>>;
-  processTypeByApplication?: Record<string, Record<string, number[]>>;
-}
-
-// ── Helpers ───────────────────────────────────────────────────
-
 function expandValues(years: number[], values: number[]): YearlyData[] {
   return years.map((year, index) => ({ year, value: values[index] ?? 0 }));
 }
 
-function expandSegment(years: number[], segment: Record<string, number[]>): SegmentData[] {
+function expandSegment(
+  years: number[],
+  segment: Record<string, number[]>
+): SegmentData[] {
   return Object.entries(segment).map(([name, values]) => ({
     name,
     data: expandValues(years, values),
   }));
 }
 
-function expandNestedSegment(years: number[], nested: Record<string, Record<string, number[]>>): Record<string, SegmentData[]> {
+function expandNestedSegment(
+  years: number[],
+  nested: Record<string, Record<string, number[]>>
+): Record<string, SegmentData[]> {
   const result: Record<string, SegmentData[]> = {};
+
   for (const [key, segment] of Object.entries(nested)) {
     result[key] = expandSegment(years, segment);
   }
+
   return result;
 }
 
-export function calculateCAGR(startValue: number, endValue: number, years: number): number {
+function expandCompactMarketData(compact: CompactMarketData): MarketData {
+  const { years } = compact;
+
+  return {
+    years,
+    totalMarket: expandValues(years, compact.totalMarket),
+    endUser: expandSegment(years, compact.endUser),
+    aircraftType: expandSegment(years, compact.aircraftType),
+    region: expandSegment(years, compact.region),
+    application: expandSegment(years, compact.application),
+    furnishedEquipment: expandSegment(years, compact.furnishedEquipment),
+    processType: compact.processType
+      ? expandSegment(years, compact.processType)
+      : undefined,
+    materialType: compact.materialType
+      ? expandSegment(years, compact.materialType)
+      : undefined,
+    countryDataByRegion: expandNestedSegment(
+      years,
+      compact.countryDataByRegion || {}
+    ),
+    endUserByAircraftType: expandNestedSegment(
+      years,
+      compact.endUserByAircraftType || {}
+    ),
+    endUserByRegion: expandNestedSegment(
+      years,
+      compact.endUserByRegion || {}
+    ),
+    aircraftTypeByRegion: expandNestedSegment(
+      years,
+      compact.aircraftTypeByRegion || {}
+    ),
+    applicationByRegion: expandNestedSegment(
+      years,
+      compact.applicationByRegion || {}
+    ),
+    equipmentByRegion: expandNestedSegment(
+      years,
+      compact.equipmentByRegion || {}
+    ),
+    processTypeByRegion: compact.processTypeByRegion
+      ? expandNestedSegment(years, compact.processTypeByRegion)
+      : undefined,
+    materialTypeByRegion: compact.materialTypeByRegion
+      ? expandNestedSegment(years, compact.materialTypeByRegion)
+      : undefined,
+    processTypeByApplication: compact.processTypeByApplication
+      ? expandNestedSegment(years, compact.processTypeByApplication)
+      : undefined,
+  };
+}
+
+export function calculateCAGR(
+  startValue: number,
+  endValue: number,
+  years: number
+): number {
   if (startValue <= 0 || years <= 0) return 0;
   return (Math.pow(endValue / startValue, 1 / years) - 1) * 100;
 }
-
-// ── useMarketData ─────────────────────────────────────────────
 
 interface UseMarketDataResult {
   data: MarketData | null;
@@ -98,56 +139,15 @@ interface UseMarketDataResult {
   refetch: () => void;
 }
 
-export function useMarketData(dataUrl: string): UseMarketDataResult {
-  const [data, setData] = useState<MarketData | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+export function useMarketData(
+  source: DashboardDataSource
+): UseMarketDataResult {
+  const { data: compact, isLoading, error, refetch } =
+    useCompactMarketDataSource(source);
+  const data = compact ? expandCompactMarketData(compact) : null;
 
-  const fetchData = useCallback(async () => {
-    setIsLoading(true);
-    setError(null);
-    try {
-      const baseUrl = import.meta.env.BASE_URL.endsWith('/') 
-        ? import.meta.env.BASE_URL.slice(0, -1) 
-        : import.meta.env.BASE_URL;
-      const fullUrl = `${baseUrl}${dataUrl}`;
-      const response = await fetch(fullUrl, { cache: "no-store" });
-      if (!response.ok) throw new Error(`Failed to fetch market data: ${response.statusText}`);
-      const compact: CompactMarketData = await response.json();
-      const { years } = compact;
-      const expanded: MarketData = {
-        years,
-        totalMarket: expandValues(years, compact.totalMarket),
-        endUser: expandSegment(years, compact.endUser),
-        aircraftType: expandSegment(years, compact.aircraftType),
-        region: expandSegment(years, compact.region),
-        application: expandSegment(years, compact.application),
-        furnishedEquipment: expandSegment(years, compact.furnishedEquipment),
-        processType: compact.processType ? expandSegment(years, compact.processType) : undefined,
-        materialType: compact.materialType ? expandSegment(years, compact.materialType) : undefined,
-        countryDataByRegion: expandNestedSegment(years, compact.countryDataByRegion || {}),
-        endUserByAircraftType: expandNestedSegment(years, compact.endUserByAircraftType || {}),
-        endUserByRegion: expandNestedSegment(years, compact.endUserByRegion || {}),
-        aircraftTypeByRegion: expandNestedSegment(years, compact.aircraftTypeByRegion || {}),
-        applicationByRegion: expandNestedSegment(years, compact.applicationByRegion || {}),
-        equipmentByRegion: expandNestedSegment(years, compact.equipmentByRegion || {}),
-        processTypeByRegion: compact.processTypeByRegion ? expandNestedSegment(years, compact.processTypeByRegion) : undefined,
-        materialTypeByRegion: compact.materialTypeByRegion ? expandNestedSegment(years, compact.materialTypeByRegion) : undefined,
-        processTypeByApplication: compact.processTypeByApplication ? expandNestedSegment(years, compact.processTypeByApplication) : undefined,
-      };
-      setData(expanded);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load market data");
-    } finally {
-      setIsLoading(false);
-    }
-  }, [dataUrl]);
-
-  useEffect(() => { fetchData(); }, [fetchData]);
-  return { data, isLoading, error, refetch: fetchData };
+  return { data, isLoading, error, refetch };
 }
-
-// ── useDrillDown ──────────────────────────────────────────────
 
 export interface DrillDownState {
   isOpen: boolean;
@@ -165,19 +165,34 @@ const initialDrillDown: DrillDownState = {
 };
 
 export function useDrillDown() {
-  const [drillDownState, setDrillDownState] = useState<DrillDownState>(initialDrillDown);
+  const [drillDownState, setDrillDownState] =
+    useState<DrillDownState>(initialDrillDown);
 
   const openDrillDown = useCallback(
-    (segmentName: string, segmentData: YearlyData[], color: string, relatedSegments?: { title: string; data: SegmentData[] }) => {
-      setDrillDownState({ isOpen: true, segmentName, segmentData, color, relatedSegments });
-    }, []
+    (
+      segmentName: string,
+      segmentData: YearlyData[],
+      color: string,
+      relatedSegments?: { title: string; data: SegmentData[] }
+    ) => {
+      setDrillDownState({
+        isOpen: true,
+        segmentName,
+        segmentData,
+        color,
+        relatedSegments,
+      });
+    },
+    []
   );
 
-  const closeDrillDown = useCallback(() => setDrillDownState(initialDrillDown), []);
+  const closeDrillDown = useCallback(
+    () => setDrillDownState(initialDrillDown),
+    []
+  );
+
   return { drillDownState, openDrillDown, closeDrillDown };
 }
-
-// ── useChartDownload ──────────────────────────────────────────
 
 const EXPORT_WIDTH = 1920;
 const EXPORT_HEIGHT = 1080;
@@ -186,65 +201,102 @@ const FOOTER_HEIGHT = 60;
 const BG_COLOR = "#0a0f1a";
 
 export function useChartDownload() {
-  const downloadChart = useCallback(async (ref: React.RefObject<HTMLDivElement>, filename: string, title?: string) => {
-    if (!ref.current) return;
-    try {
-      const filter = (node: HTMLElement) => {
-        return !node?.hasAttribute?.("data-download-exclude");
-      };
-      const chartDataUrl = await toPng(ref.current, { backgroundColor: BG_COLOR, quality: 1, pixelRatio: 3, filter });
-      const canvas = document.createElement("canvas");
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return;
-      canvas.width = EXPORT_WIDTH;
-      canvas.height = EXPORT_HEIGHT;
-      ctx.fillStyle = BG_COLOR;
-      ctx.fillRect(0, 0, EXPORT_WIDTH, EXPORT_HEIGHT);
+  const downloadChart = useCallback(
+    async (ref: React.RefObject<HTMLDivElement>, filename: string, title?: string) => {
+      if (!ref.current) return;
 
-      if (title) {
-        ctx.fillStyle = "rgba(255,255,255,0.04)";
-        ctx.fillRect(0, 0, EXPORT_WIDTH, HEADER_HEIGHT);
-        ctx.fillStyle = "rgba(255,255,255,0.95)";
-        ctx.font = "bold 28px system-ui, sans-serif";
-        ctx.textAlign = "left";
-        ctx.fillText(title, 40, 55);
+      try {
+        const filter = (node: HTMLElement) =>
+          !node?.hasAttribute?.("data-download-exclude");
+
+        const chartDataUrl = await toPng(ref.current, {
+          backgroundColor: BG_COLOR,
+          quality: 1,
+          pixelRatio: 3,
+          filter,
+        });
+
+        const canvas = document.createElement("canvas");
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+
+        canvas.width = EXPORT_WIDTH;
+        canvas.height = EXPORT_HEIGHT;
+        ctx.fillStyle = BG_COLOR;
+        ctx.fillRect(0, 0, EXPORT_WIDTH, EXPORT_HEIGHT);
+
+        if (title) {
+          ctx.fillStyle = "rgba(255,255,255,0.04)";
+          ctx.fillRect(0, 0, EXPORT_WIDTH, HEADER_HEIGHT);
+          ctx.fillStyle = "rgba(255,255,255,0.95)";
+          ctx.font = "bold 28px system-ui, sans-serif";
+          ctx.textAlign = "left";
+          ctx.fillText(title, 40, 55);
+        }
+
+        const chartImg = new Image();
+        chartImg.src = chartDataUrl;
+        await new Promise<void>((resolve) => {
+          chartImg.onload = () => resolve();
+        });
+
+        const topOffset = title ? HEADER_HEIGHT : 20;
+        const padding = 30;
+        const chartAreaWidth = EXPORT_WIDTH - padding * 2;
+        const chartAreaHeight = EXPORT_HEIGHT - topOffset - FOOTER_HEIGHT - padding;
+        const scale = Math.min(
+          chartAreaWidth / chartImg.width,
+          chartAreaHeight / chartImg.height
+        );
+        const drawW = chartImg.width * scale;
+        const drawH = chartImg.height * scale;
+
+        ctx.drawImage(
+          chartImg,
+          (EXPORT_WIDTH - drawW) / 2,
+          topOffset + (chartAreaHeight - drawH) / 2,
+          drawW,
+          drawH
+        );
+
+        ctx.fillStyle = "rgba(255,255,255,0.05)";
+        ctx.fillRect(0, EXPORT_HEIGHT - FOOTER_HEIGHT, EXPORT_WIDTH, FOOTER_HEIGHT);
+
+        const logoImg = new Image();
+        logoImg.src = stratviewLogoWhite;
+        await new Promise<void>((resolve) => {
+          logoImg.onload = () => resolve();
+        });
+
+        const logoH = 30;
+        const logoW = (logoImg.width / logoImg.height) * logoH;
+        ctx.drawImage(
+          logoImg,
+          24,
+          EXPORT_HEIGHT - FOOTER_HEIGHT + (FOOTER_HEIGHT - logoH) / 2,
+          logoW,
+          logoH
+        );
+
+        ctx.fillStyle = "rgba(255,255,255,0.6)";
+        ctx.font = "14px system-ui, sans-serif";
+        ctx.textAlign = "right";
+        ctx.fillText(
+          "stratviewresearch.com",
+          EXPORT_WIDTH - 24,
+          EXPORT_HEIGHT - FOOTER_HEIGHT + (FOOTER_HEIGHT + 10) / 2
+        );
+
+        const link = document.createElement("a");
+        link.download = `${filename}.png`;
+        link.href = canvas.toDataURL("image/png", 1);
+        link.click();
+      } catch (error) {
+        console.error("Failed to download chart:", error);
       }
-
-      const chartImg = new Image();
-      chartImg.src = chartDataUrl;
-      await new Promise((resolve) => { chartImg.onload = resolve; });
-      const topOffset = title ? HEADER_HEIGHT : 20;
-      const padding = 30;
-      const chartAreaWidth = EXPORT_WIDTH - padding * 2;
-      const chartAreaHeight = EXPORT_HEIGHT - topOffset - FOOTER_HEIGHT - padding;
-      const scale = Math.min(chartAreaWidth / chartImg.width, chartAreaHeight / chartImg.height);
-      const drawW = chartImg.width * scale;
-      const drawH = chartImg.height * scale;
-      ctx.drawImage(chartImg, (EXPORT_WIDTH - drawW) / 2, topOffset + (chartAreaHeight - drawH) / 2, drawW, drawH);
-
-      ctx.fillStyle = "rgba(255,255,255,0.05)";
-      ctx.fillRect(0, EXPORT_HEIGHT - FOOTER_HEIGHT, EXPORT_WIDTH, FOOTER_HEIGHT);
-
-      const logoImg = new Image();
-      logoImg.src = stratviewLogoWhite;
-      await new Promise((resolve) => { logoImg.onload = resolve; });
-      const logoH = 30;
-      const logoW = (logoImg.width / logoImg.height) * logoH;
-      ctx.drawImage(logoImg, 24, EXPORT_HEIGHT - FOOTER_HEIGHT + (FOOTER_HEIGHT - logoH) / 2, logoW, logoH);
-
-      ctx.fillStyle = "rgba(255,255,255,0.6)";
-      ctx.font = "14px system-ui, sans-serif";
-      ctx.textAlign = "right";
-      ctx.fillText("stratviewresearch.com", EXPORT_WIDTH - 24, EXPORT_HEIGHT - FOOTER_HEIGHT + (FOOTER_HEIGHT + 10) / 2);
-
-      const link = document.createElement("a");
-      link.download = `${filename}.png`;
-      link.href = canvas.toDataURL("image/png", 1);
-      link.click();
-    } catch (error) {
-      console.error("Failed to download chart:", error);
-    }
-  }, []);
+    },
+    []
+  );
 
   return { downloadChart };
 }
